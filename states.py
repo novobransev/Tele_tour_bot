@@ -13,3 +13,14 @@ class Trip(StatesGroup):
     departure_time = State()
     trip_date = State()
     description = State()
+    photo = State()
+
+
+class Form(StatesGroup):
+    waiting_for_new_name = State()
+    waiting_for_new_phone = State()
+    waiting_for_new_photo = State()
+
+
+class Tours(StatesGroup):
+    waiting_for_tour_info = State()  # Ожидание информации о новой поездке
