@@ -27,6 +27,7 @@ def create_tables():
 
         3. Таблица Users:
            - id: INTEGER, PRIMARY KEY, AUTO INCREMENT
+           - telegram_id: INTEGER - id  телеграмма
            - name: TEXT - имя пользователя
            - phone_number: TEXT - номер телефона
            - trips: TEXT - список поездок (можно использовать JSON или просто перечисление ID поездок)
@@ -62,7 +63,7 @@ def create_tables():
     CREATE TABLE IF NOT EXISTS Users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         telegram_id INTEGER UNIQUE NOT NULL,
-        name TEXT NOT NULL,
+        name TEXT NULL,
         phone_number TEXT NOT NULL,
         trips TEXT,  -- можно использовать JSON или перечисление ID поездок
         photo TEXT  -- ссылка на фотографию пользователя

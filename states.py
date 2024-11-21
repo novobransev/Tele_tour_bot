@@ -24,3 +24,8 @@ class Form(StatesGroup):
 
 class Tours(StatesGroup):
     waiting_for_tour_info = State()  # Ожидание информации о новой поездке
+
+
+class TourStates(StatesGroup):
+    waiting_for_field_value = State()
+    waiting_for_photo = State()

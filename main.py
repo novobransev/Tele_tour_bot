@@ -1,15 +1,23 @@
 import logging
 import os
 import sqlite3
+from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from aiogram.dispatcher import FSMContext
+from aiogram.dispatcher import FSMContext, filters
 from aiogram.utils import executor
 from bd import insert_user, get_users, get_user_by_telegram_id, update_user, \
     insert_question, get_questions, delete_question_from_db, \
     update_question_in_db, update_answer_in_db, get_current_question  # Убедитесь, что эти функции корректны.
-from states import Form, Questions, Tours
+from states import Form, Questions, Tours, TourStates
+from aiogram_timepicker.panel import FullTimePicker, full_timep_callback, full_timep_default
+from aiogram_datepicker import Datepicker, DatepickerSettings
+full_timep_default(
+    # default labels
+    label_up='⇪', label_down='⇓',
+    hour_format='{0:02}h', minute_format='{0:02}m', second_format='{0:02}s'
+)
 
 API_TOKEN = '7430055967:AAE_ptETbGQV1CT2RoeqTTFDV1N6flWzquY'
 
@@ -21,10 +29,15 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 DEFAULT_PHOTO = 'https://cs1e5a.4pda.ws/15550621.png'  # URL фото по умолчанию
 PHOTO_STORAGE_DIR = 'photos'  # Директория для хранения изображений
 ADMIN_ID = 868918195
+PHOTO_DIR = 'tour_photo'
 
 # Проверяем, существует ли директория для хранения фотографий, если нет - создаем
 if not os.path.exists(PHOTO_STORAGE_DIR):
     os.makedirs(PHOTO_STORAGE_DIR)
+
+# Убедитесь, что папка существует
+if not os.path.exists(PHOTO_DIR):
+    os.makedirs(PHOTO_DIR)
 
 
 @dp.message_handler(commands=['start'], state='*')
@@ -38,7 +51,6 @@ async def start_command(message: types.Message, state: FSMContext):
     if not any(user[1] == user_id for user in users):  # Проверяем по telegram_id
         # Добавляем нового пользователя. Номер телефона "не записан".
         insert_user(message.from_user.full_name, "не записан", "", None, telegram_id=user_id)
-        await message.answer("Ваши данные записаны в систему.")
 
     # Показываем профиль пользователя
     await show_user_profile(message, telegram_id=user_id)
@@ -57,9 +69,10 @@ async def show_user_profile(message: types.Message, edit_mode=False, telegram_id
 
     if not edit_mode:  # Если не в режиме редактирования
         inline_markup.row(
-            types.InlineKeyboardButton("✈️ Мои поездки", callback_data="my_trips"),
-            types.InlineKeyboardButton("✍️ Редактировать профиль", callback_data="edit_profile")
+            types.InlineKeyboardButton("✈️ Поездки", callback_data="my_trips"),
+            types.InlineKeyboardButton(text="❓ Частые вопросы", callback_data="faq_questions")
         )
+        inline_markup.add(types.InlineKeyboardButton("✍️ Редактировать профиль", callback_data="edit_profile"))
         if telegram_id == ADMIN_ID:
             inline_markup.add(types.InlineKeyboardButton("👑 Админка", callback_data="admin"))
     else:  # В режиме редактирования
@@ -79,6 +92,48 @@ async def show_user_profile(message: types.Message, edit_mode=False, telegram_id
         caption=profile_text,
         reply_markup=inline_markup
     )
+
+
+import sqlite3
+from aiogram import types
+
+import sqlite3
+from aiogram import types
+
+
+@dp.callback_query_handler(lambda c: c.data == "faq_questions")
+async def faq_questions(callback_query: types.CallbackQuery):
+    # Подключаемся к базе данных
+    connection = sqlite3.connect('tour_bot.db')
+    cursor = connection.cursor()
+
+    # Извлекаем все вопросы и ответы
+    cursor.execute("SELECT question, answer FROM Questions")
+    records = cursor.fetchall()
+    inline_markup = types.InlineKeyboardMarkup()
+    inline_markup.add(types.InlineKeyboardButton("↩️ Назад", callback_data="back_to_profile"))
+
+    # Форматируем текст для отправки
+    if records:
+        faq_text = ""
+        for index, (question, answer) in enumerate(records, start=1):
+            faq_text += f"📝 *Вопрос {index}:* {question}\n🗨️ *Ответ:* {answer}\n\n"
+
+        # Отправляем сообщение с вопросами и ответами
+        await bot.send_message(
+            chat_id=callback_query.from_user.id,
+            text=faq_text,
+            parse_mode="Markdown",  # Используем Markdown форматирование
+            reply_markup=inline_markup
+        )
+    else:
+        await bot.send_message(
+            chat_id=callback_query.from_user.id,
+            text="🚫 Нет доступных вопросов."
+        )
+
+    # Закрываем соединение с базой данных
+    connection.close()
 
 
 async def check_admin_id_message(message: types.Message):
@@ -112,7 +167,143 @@ async def process_edit_profile(callback_query: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data == "my_trips")
 async def process_my_trips(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
-    await callback_query.message.answer("Здесь будут ваши поездки.")  # Вы можете добавить логику для показа поездок.
+    # Получаем данные о поездках из базы данных
+    connection = sqlite3.connect('tour_bot.db')
+    cursor = connection.cursor()
+    cursor.execute(
+        "SELECT id, departure_city, arrival_city, price, departure_time, trip_date, description, photo, published FROM Tours")
+    records = cursor.fetchall()
+    connection.close()
+
+    if records:
+        for record in records:
+            tour_id, departure_city, arrival_city, price, departure_time, trip_date, description, photo, published = record
+
+            # Создаем инлайн-кнопку "Записаться"
+            register_button = types.InlineKeyboardButton(text='📝 Записаться', callback_data=f'register_for_trip_{tour_id}_{departure_city}_{arrival_city}')
+
+            # Создаем клавиатуру с кнопками
+            keyboard = types.InlineKeyboardMarkup()
+            keyboard.add(register_button)
+
+            # Формируем карточку поездки
+            published_text = "✅ Опубликовано" if published else "❌ Не опубликовано"
+            caption = (
+                f"\n№ поездки: {tour_id}\n\n"
+                f"\n✈️ Город отправления: {departure_city if departure_city else 'Не заполнено'}\n\n"
+                f"🌍 Город назначения: {arrival_city if arrival_city else 'Не заполнено'}\n\n"
+                f"💰 Цена: {price if price else 'Не заполнено'}\n\n"
+                f"🕒 Время отправления: {departure_time if departure_time else 'Не заполнено'}\n\n"
+                f"📅 Дата поездки: {trip_date if trip_date else 'Не заполнено'}\n\n"
+                f"📝 Описание: {description if description else 'Не заполнено'}\n\n"
+            )
+
+            await bot.send_photo(
+                chat_id=callback_query.from_user.id,
+                photo=open(photo,
+                           'rb') if photo else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
+                caption=caption,
+                reply_markup=keyboard
+            )
+        # После всех поездок отправляем сообщение с кнопкой "Назад"
+        back_keyboard = types.InlineKeyboardMarkup()
+        back_button = types.InlineKeyboardButton(text='🔙 Назад', callback_data='back_to_profile')
+        back_keyboard.add(back_button)
+
+
+
+        await bot.send_message(
+            chat_id=callback_query.from_user.id,
+            text="Это все поездки.",
+            reply_markup=back_keyboard  # Добавляем инлайн-кнопку "Назад"
+        )
+    else:
+        await bot.send_message(callback_query.from_user.id, "Нет доступных поездок.")
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("register_for_trip_"))
+async def register_for_trip(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+
+    # Здесь можно получить id тура из callback_data
+    tour_id = callback_query.data.split('_')[-3]  # Извлекаем tour_id
+    departure_city = callback_query.data.split('_')[-2]
+    arrival_city = callback_query.data.split('_')[-1]
+
+    # Отправляем сообщение с информацией о записи
+    message = (
+        f"Хотите записаться на тур №{tour_id}\n"
+        f"{departure_city} - {arrival_city}?\n\n"
+        "Вы можете записаться двумя способами:\n"
+        "1️⃣ Позвонить нашему менеджеру по номеру: <номер телефона>\n"
+        "2️⃣ Записаться через бота, нажав кнопку ниже."
+    )
+
+    # Создаем инлайн-кнопку "Записаться через бота"
+    register_via_bot_button = types.InlineKeyboardButton(text='🤖 Записаться через бота', callback_data=f'register_via_bot_{tour_id}')
+    register_keyboard = types.InlineKeyboardMarkup()
+    register_keyboard.add(register_via_bot_button)
+
+    await bot.send_message(
+        chat_id=callback_query.from_user.id,
+        text=message,
+        reply_markup=register_keyboard
+    )
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("register_via_bot_"))
+async def register_via_bot(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+
+    user_id = callback_query.from_user.id
+
+    # Проверяем, есть ли зарегистрированный номер телефона
+    connection = sqlite3.connect('tour_bot.db')
+    cursor = connection.cursor()
+    cursor.execute("SELECT phone_number FROM Users WHERE telegram_id = ?", (user_id,))
+    result = cursor.fetchone()
+    connection.close()
+    print(result)
+    if result and result[0] and result[0] != 'не записан':
+        # Если номер телефона уже есть
+        phone_number = result[0]
+        await bot.send_message(callback_query.from_user.id,
+                               f"Вы записаны на поездку. Ваш номер: {phone_number}. Мы свяжемся с вами для подтверждения!")
+    else:
+        # Если номер телефона не зарегистрирован
+        # Предлагаем ввести номер телефона
+        enter_phone_button = types.InlineKeyboardButton(text='📞 Ввести номер телефона',
+                                                        callback_data='enter_phone_number')
+        keyboard = types.InlineKeyboardMarkup().add(enter_phone_button)
+
+        await bot.send_message(callback_query.from_user.id, "У вас еще нет зарегистрированного номера телефона.\n" + "Пожалуйста, введите свой номер телефона:",
+                               reply_markup=keyboard)
+
+
+@dp.callback_query_handler(lambda c: c.data == 'enter_phone_number')
+async def enter_phone_number(callback_query: types.CallbackQuery):
+    await bot.answer_callback_query(callback_query.id)
+
+    # Запрашиваем номер телефона
+    await bot.send_message(callback_query.from_user.id,
+                           "Пожалуйста, отправьте свой номер телефона в формате: +7XXXXXXXXXX")
+
+
+@dp.message_handler(lambda message: message.text.startswith('+7') or message.text.startswith('8') and len(message.text) == 12)
+async def save_phone_number(message: types.Message):
+    phone_number = message.text
+    user_id = message.from_user.id
+
+    # Сохраняем номер телефона в базу данных
+    connection = sqlite3.connect('tour_bot.db')
+    cursor = connection.cursor()
+    cursor.execute("INSERT OR REPLACE INTO Users (telegram_id, phone_number) VALUES (?, ?)", (user_id, phone_number))
+    connection.commit()
+    connection.close()
+
+    await bot.send_message(message.chat.id,
+                           "Ваш номер телефона успешно записан. Теперь вы можете записаться на поездку через бота!")
+
 
 
 # Обработчики для редактирования
@@ -288,42 +479,6 @@ async def add_question(callback_query: types.CallbackQuery):
     await dp.current_state(user=callback_query.from_user.id).set_data({"action": "add"})
 
 
-@dp.message_handler(state="*")
-async def handle_new_question(message: types.Message, state: FSMContext):
-    user_data = await state.get_data()
-
-    print(user_data)
-
-    if "action" in user_data and user_data["action"] == "add":
-        question_text = message.text
-        await bot.send_message(message.from_user.id, "Введите ответ:")
-        await state.update_data({"question": question_text, "action": "add_answer"})
-    elif "action" in user_data and user_data["action"] == "add_answer":
-        answer_text = message.text
-        insert_question(user_data["question"], answer_text)
-        await bot.send_message(message.from_user.id, "Вопрос добавлен!")
-        await admin_faq_2(message)
-        await state.finish()  # Сброс состояния
-
-    elif "action" in user_data and user_data["action"] == "edit_question_text_":
-        question_id = user_data["question_id"]
-        new_question_text = message.text
-        update_question_in_db(question_id, new_question_text)  # Ваша функция обновления
-        await bot.send_message(message.from_user.id, "Вопрос обновлен!")
-
-        await admin_faq(message)  # Вернем к вопросам и ответам
-        await state.finish()
-
-    elif "action" in user_data and user_data["action"] == "edit_answer_text_":
-        question_id = user_data["question_id"]
-        new_answer_text = message.text
-        update_answer_in_db(question_id, new_answer_text)  # Ваша функция обновления
-        await bot.send_message(message.from_user.id, "Ответ обновлен!")
-
-        await admin_faq(message)  # Вернем к вопросам и ответам
-        await state.finish()
-
-
 @dp.callback_query_handler(lambda c: c.data.startswith("edit_questions_"))
 async def edit_question(callback_query: types.CallbackQuery):
     question_id = int(callback_query.data.split("_")[-1])
@@ -419,18 +574,28 @@ async def view_tours(callback_query: types.CallbackQuery):
 
             # Формируем карточку поездки
             published_text = "✅ Опубликовано" if published else "❌ Не опубликовано"
-            card = f"""
-            🚌 Поездка #
-            **Город отправления:** {departure_city}
-            **Город назначения:** {arrival_city}
-            **Цена:** {price}$
-            **Время отправления:** {departure_time}
-            **Дата поездки:** {trip_date}
-            **Описание:** {description}
-            {published_text}
-            [![Фото]({photo})]({photo})
-            """
-            await bot.send_message(callback_query.from_user.id, card, parse_mode='Markdown')
+            caption = (
+                f"\n✈️ Город отправления: {departure_city if departure_city else 'Не заполнено'}\n\n"
+                f"🌍 Город назначения: {arrival_city if arrival_city else 'Не заполнено'}\n\n"
+                f"💰 Цена: {price if price else 'Не заполнено'}\n\n"
+                f"🕒 Время отправления: {departure_time if departure_time else 'Не заполнено'}\n\n"
+                f"📅 Дата поездки: {trip_date if trip_date else 'Не заполнено'}\n\n"
+                f"📝 Описание: {description if description else 'Не заполнено'}\n\n"
+                f"📢 Опубликовано: {'Да ✅' if published else 'Нет ❌'}"
+            )
+
+            # Создаем инлайн-кнопки
+            keyboard = types.InlineKeyboardMarkup()
+            edit_button = types.InlineKeyboardButton(text='✏️ Редактировать', callback_data=f'edit_tour_{tour_id}')
+            delete_button = types.InlineKeyboardButton(text='🗑️ Удалить', callback_data=f'delete_tour_{tour_id}')
+            keyboard.add(edit_button, delete_button)
+
+            await bot.send_photo(
+                chat_id=callback_query.from_user.id,
+                photo=open(photo, 'rb') if photo else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
+                caption=caption,
+                reply_markup=keyboard  # Добавляем инлайн-кнопки
+            )
 
     else:
         await bot.send_message(callback_query.from_user.id, "Нет доступных поездок.")
@@ -445,41 +610,477 @@ async def view_tours(callback_query: types.CallbackQuery):
     await bot.send_message(callback_query.from_user.id, "Выберите действие:", reply_markup=markup)
 
 
-@dp.callback_query_handler(lambda c: c.data == "add_tour")
-async def add_tour(callback_query: types.CallbackQuery):
-    await bot.send_message(callback_query.from_user.id,
-                           "Пожалуйста, введите информацию о новой поездке в следующем формате:\n"
-                           "Город отправления, Город назначения, Цена, Время отправления, "
-                           "Дата поездки, Описание, Ссылка на фото, Опубликовано (да/нет)")
+@dp.callback_query_handler(lambda c: c.data.startswith('edit_tour_'))
+async def edit_tour(callback_query: types.CallbackQuery):
+    tour_id = callback_query.data.split('_')[-1]  # Получаем tour_id
 
-    await Tours.waiting_for_tour_info.set()  # Устанавливаем состояние для получения данных о поездке
+    conn = sqlite3.connect('tour_bot.db')
+
+    # Получаем обновленную информацию о поездке
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM Tours WHERE id = ?", (tour_id,))
+    tour_info = cursor.fetchone()
+    conn.close()
+
+    # Формируем новое caption
+    caption = create_caption(tour_info)
+    photo_path = os.path.join(PHOTO_DIR, f'tour_{tour_id}.jpg')  # Формируем имя файла
+
+    if not os.path.isfile(photo_path):
+        photo_path = False
+
+    await bot.send_photo(
+        chat_id=callback_query.from_user.id,
+        photo=open(photo_path,
+                   'rb') if photo_path else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
+        caption=caption,
+        reply_markup=generate_inline_keyboard(tour_id)
+    )
 
 
-@dp.message_handler(state=Tours.waiting_for_tour_info)
-async def process_add_tour(message: types.Message, state: FSMContext):
-    data = message.text.split(", ")
+@dp.callback_query_handler(lambda c: c.data.startswith('delete_tour_'))
+async def delete_tour(callback_query: types.CallbackQuery):
+    # Получаем tour_id из callback_data
+    tour_id = callback_query.data.split('_')[-1]
 
-    if len(data) != 8:
-        await message.reply("Неверный формат! Пожалуйста, убедитесь, что все поля указаны корректно.")
-        return
-
-    departure_city, arrival_city, price, departure_time, trip_date, description, photo, published = data
-    published = 1 if published.lower() == "да" else 0  # Преобразуем строку в boolean
-
-    # Сохраняем данные в базу данных
+    # Создаем соединение с базой данных
     connection = sqlite3.connect('tour_bot.db')
     cursor = connection.cursor()
-    cursor.execute(
-        "INSERT INTO Tours (departure_city, arrival_city, price, departure_time, trip_date, description, photo, published) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (departure_city, arrival_city, float(price), departure_time, trip_date, description, photo, published))
+
+    # Удаляем запись о поездке по заданному tour_id
+    cursor.execute("DELETE FROM Tours WHERE id = ?", (tour_id,))
     connection.commit()
     connection.close()
 
-    await message.reply("Поездка успешно добавлена!")
+    # Отправляем сообщение о том, что поездка была удалена
+    await view_tours(callback_query)
 
-    # Вернёмся к списку поездок
-    await view_tours(message)
-    await state.finish()  # Сброс состояния
+
+
+# Ваш обработчик для нажатия кнопки "Добавить поездку"
+@dp.callback_query_handler(lambda c: c.data == "add_tour")
+async def add_tour(callback_query: types.CallbackQuery):
+    conn = sqlite3.connect('tour_bot.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        INSERT INTO Tours (departure_city, arrival_city, price, departure_time, trip_date, description, photo, status, published) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', ("", "", 0.0, "", "", "", "", "", False))
+
+    new_tour_id = cursor.lastrowid
+    conn.commit()
+
+    cursor.execute("SELECT * FROM Tours WHERE id = ?", (new_tour_id,))
+    tour_info = cursor.fetchone()
+    conn.close()
+
+    caption = create_caption(tour_info)
+
+    await bot.send_photo(
+        chat_id=callback_query.from_user.id,
+        photo="https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
+        caption=caption,
+        reply_markup=generate_inline_keyboard(new_tour_id)
+    )
+
+
+def create_caption(tour_info):
+    if tour_info:
+        departure_city, arrival_city, price, departure_time, trip_date, description, photo, status, published = tour_info[1:]  # Пропускаем ID
+        caption = (
+            f"\n✈️ Город отправления: {departure_city if departure_city else 'Не заполнено'}\n\n"
+            f"🌍 Город назначения: {arrival_city if arrival_city else 'Не заполнено'}\n\n"
+            f"💰 Цена: {price if price else 'Не заполнено'}\n\n"
+            f"🕒 Время отправления: {departure_time if departure_time else 'Не заполнено'}\n\n"
+            f"📅 Дата поездки: {trip_date if trip_date else 'Не заполнено'}\n\n"
+            f"📝 Описание: {description if description else 'Не заполнено'}\n\n"
+            f"📢 Опубликовано: {'Да ✅' if published else 'Нет ❌'}"
+        )
+
+        return caption
+    return "Нет информации."
+
+
+def generate_inline_keyboard(tour_id):
+    keyboard = types.InlineKeyboardMarkup()
+
+    # Получаем информацию о туре, чтобы проверить заполненность полей
+    conn = sqlite3.connect('tour_bot.db')
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT departure_city, arrival_city, price, departure_time, trip_date, description, photo, published FROM Tours WHERE id = ?",
+        (tour_id,))
+    tour_info = cursor.fetchone()
+    conn.close()
+
+    fields = [
+        ("Город отправления", tour_info[0]),
+        ("Город назначения", tour_info[1]),
+        ("Цена", tour_info[2]),
+        ("Время отправления", tour_info[3]),
+        ("Дата поездки", tour_info[4]),
+        ("Описание", tour_info[5]),
+        ("Ссылка на фото", tour_info[6]),
+        ("Опубликовано", 'Да' if tour_info[7] else 'Нет')
+    ]
+
+    call_data = [
+        'departure-city',
+        'arrival-city',
+        'price',
+        'departure-time',
+        'trip-date',
+        'description',
+        'photo',
+        'published'
+    ]
+
+    count = 0
+    for field_name, field_value in fields:
+        emoji = '✅' if field_value and field_value != "Нет" else '❌'
+        button_text = f"{emoji} {field_name}"
+        button = types.InlineKeyboardButton(text=button_text,
+                                            callback_data=f"edit_field_{call_data[count]}_{tour_id}")
+        keyboard.add(button)
+        count += 1
+        print(field_name, field_value)
+    keyboard.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin"))
+    return keyboard
+
+# full timepicker usage
+@dp.callback_query_handler(full_timep_callback.filter())
+async def process_full_timepicker(callback_query: types.CallbackQuery, callback_data: dict, state: FSMContext):
+    user_data = await state.get_data()
+    tour_id = user_data.get('tour_id')
+    r = await FullTimePicker().process_selection(callback_query, callback_data)
+    if r.selected:
+        await callback_query.message.delete_reply_markup()
+
+        conn = sqlite3.connect('tour_bot.db')
+        cursor = conn.cursor()
+
+        cursor.execute(f"UPDATE Tours SET {'departure_time'} = ? WHERE id = ?", (r.time.strftime("%H:%M"), tour_id))
+        conn.commit()
+
+        # Получаем обновленную информацию о поездке
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM Tours WHERE id = ?", (tour_id,))
+        tour_info = cursor.fetchone()
+        conn.close()
+
+        # Формируем новое caption
+        caption = create_caption(tour_info)
+        photo_path = os.path.join(PHOTO_DIR, f'tour_{tour_id}.jpg')  # Формируем имя файла
+
+        if not os.path.isfile(photo_path):
+            photo_path = False
+
+        # Отправляем обновленное сообщение с фотографией
+        await bot.send_photo(
+            chat_id=callback_query.from_user.id,
+            photo=open(photo_path, 'rb') if photo_path else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
+            caption=caption,
+            reply_markup=generate_inline_keyboard(tour_id)
+        )
+
+        await state.finish()  # Завершаем текущее состояние
+
+
+
+@dp.callback_query_handler(lambda c: c.data.startswith("edit_field_"))
+async def edit_field(callback_query: types.CallbackQuery, state: FSMContext):    # Получаем tour_id и поле, которое пользователь хочет редактировать из callback_data
+    field, tour_id = callback_query.data.split('_')[-2], callback_query.data.split('_')[-1]
+
+    # Сохраняем tour_id в состояние
+    await state.update_data(tour_id=tour_id)
+
+    if field == 'departure-city':
+        await callback_query.message.answer("Введите город отправления:")
+        await TourStates.waiting_for_field_value.set()
+        await state.update_data(field_name='departure_city')
+
+    elif field == 'arrival-city':
+        await callback_query.message.answer("Введите город назначения:")
+        await TourStates.waiting_for_field_value.set()
+        await state.update_data(field_name='arrival_city')
+
+    elif field == 'price':
+        await callback_query.message.answer("Введите цену:")
+        await TourStates.waiting_for_field_value.set()
+        await state.update_data(field_name='price')
+
+    elif field == 'departure-time':
+        await callback_query.message.answer(
+            "Выберите время начала поездки: ",
+            reply_markup=await FullTimePicker().start_picker()
+        )
+
+    elif field == 'trip-date':
+        await callback_query.message.answer("Введите дату поездки:")
+        datepicker = Datepicker(_get_datepicker_settings())
+
+        markup = datepicker.start_calendar()
+        await callback_query.message.answer('Select a date: ', reply_markup=markup)
+        await state.update_data(field_name='trip_date')
+
+    elif field == 'description':
+        await callback_query.message.answer("Введите описание:")
+        await TourStates.waiting_for_field_value.set()
+        await state.update_data(field_name='description')
+
+    elif field == 'photo':
+        await callback_query.message.answer("Введите ссылку на фото:")
+        await TourStates.waiting_for_photo.set()
+        await state.update_data(field_name='photo')
+
+    elif field == 'published':
+        photo_path = os.path.join(PHOTO_DIR, f'tour_{tour_id}.jpg')  # Формируем имя файла
+
+        if not os.path.isfile(photo_path):
+            photo_path = False
+        conn = sqlite3.connect('tour_bot.db')
+
+        # Получаем обновленную информацию о поездке
+        cursor = conn.cursor()
+        cursor.execute("SELECT published FROM Tours WHERE id = ?", (tour_id,))
+
+        is_published = cursor.fetchone()[0]
+        print(is_published)
+
+        if is_published:
+            cursor.execute(f"UPDATE Tours SET published = ? WHERE id = ?", (0, tour_id))
+            conn.commit()
+        else:
+            cursor.execute(f"UPDATE Tours SET published = ? WHERE id = ?", (1, tour_id))
+            conn.commit()
+
+        cursor.execute("SELECT * FROM Tours WHERE id = ?", (tour_id,))
+        tour_info = cursor.fetchone()
+        conn.close()
+
+        # Формируем новое caption
+        caption = create_caption(tour_info)
+
+        # Отправляем обновленное сообщение с фотографией
+        await bot.send_photo(
+            chat_id=callback_query.from_user.id,
+            photo=open(photo_path, 'rb') if photo_path else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
+            caption=caption,
+            reply_markup=generate_inline_keyboard(tour_id)
+        )
+
+
+DatepickerSettings(
+    initial_view='day',  #available views -> day, month, year
+    initial_date=datetime.now().date(),  #default date
+    views={
+        'day': {
+            'show_weekdays': True,
+            'weekdays_labels': ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'],
+            'header': ['prev-year', 'days-title',  'next-year'],
+            'footer': ['prev-month', 'select', 'next-month'], #if you don't need select action, you can remove it and the date will return automatically without waiting for the button select
+            #available actions -> prev-year, days-title, next-year, prev-month, select, next-month, ignore
+        },
+        'month': {
+            'months_labels': ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'],
+            'header': [
+                        ['prev-year', 'year', 'next-year'], #you can separate buttons into groups
+                       ],
+            'footer': ['select'],
+            #available actions -> prev-year, year, next-year, select, ignore
+        },
+        'year': {
+            'header': [],
+            'footer': ['prev-years', 'next-years'],
+            #available actions -> prev-years, ignore, next-years
+        }
+    },
+    labels={
+        'prev-year': '<<',
+        'next-year': '>>',
+        'prev-years': '<<',
+        'next-years': '>>',
+        'days-title': '{month} {year}',
+        'selected-day': '{day} *',
+        'selected-month': '{month} *',
+        'present-day': '• {day} •',
+        'prev-month': '<',
+        'select': 'Выбрать',
+        'next-month': '>',
+        'ignore': ''
+    },
+    custom_actions=[] #some custom actions
+
+)
+
+def _get_datepicker_settings():
+    return DatepickerSettings() #some settings
+
+
+@dp.callback_query_handler(Datepicker.datepicker_callback.filter())
+async def _process_datepicker(callback_query: types.CallbackQuery, callback_data: dict, state: FSMContext):
+    datepicker = Datepicker(_get_datepicker_settings())
+    date = await datepicker.process(callback_query, callback_data)
+    if date:
+        user_data = await state.get_data()
+        field_name = user_data.get('field_name')
+        tour_id = user_data.get('tour_id')
+        photo_path = os.path.join(PHOTO_DIR, f'tour_{tour_id}.jpg')  # Формируем имя файла
+
+        if not os.path.isfile(photo_path):
+            photo_path = False
+
+        # Обновляем значение в БД
+        conn = sqlite3.connect('tour_bot.db')
+        cursor = conn.cursor()
+
+        cursor.execute(f"UPDATE Tours SET {field_name} = ? WHERE id = ?", (date.strftime('%d.%m.%Y'), tour_id))
+        conn.commit()
+
+        # Получаем обновленную информацию о поездке
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM Tours WHERE id = ?", (tour_id,))
+        tour_info = cursor.fetchone()
+        conn.close()
+
+        # Формируем новое caption
+        caption = create_caption(tour_info)
+
+        # Отправляем обновленное сообщение с фотографией
+        await bot.send_photo(
+            chat_id=callback_query.from_user.id,
+            photo=open(photo_path, 'rb') if photo_path else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
+            caption=caption,
+            reply_markup=generate_inline_keyboard(tour_id)
+        )
+
+        await state.finish()  # Завершаем текущее состояние
+
+    await callback_query.answer()
+
+
+@dp.message_handler(state=TourStates.waiting_for_field_value)
+async def process_field_value(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    field_name = user_data.get('field_name')
+    tour_id = user_data.get('tour_id')
+
+    # Обновляем значение в БД
+    conn = sqlite3.connect('tour_bot.db')
+    cursor = conn.cursor()
+
+    # Проверка, нужно ли конвертировать значение в boolean
+    if field_name == 'published':
+        value = message.text.strip().lower() == 'да'
+    else:
+        value = message.text.strip()
+
+    cursor.execute(f"UPDATE Tours SET {field_name} = ? WHERE id = ?", (value, tour_id))
+    conn.commit()
+
+    # Получаем обновленную информацию о поездке
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM Tours WHERE id = ?", (tour_id,))
+    tour_info = cursor.fetchone()
+    conn.close()
+
+    # Формируем новое caption
+    caption = create_caption(tour_info)
+
+    photo_path = os.path.join(PHOTO_DIR, f'tour_{tour_id}.jpg')  # Формируем имя файла
+
+    if not os.path.isfile(photo_path):
+        photo_path = False
+
+    # Отправляем обновленное сообщение с фотографией
+    await bot.send_photo(
+        chat_id=message.from_user.id,
+        photo=open(photo_path, 'rb') if photo_path else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
+        caption=caption,
+        reply_markup=generate_inline_keyboard(tour_id)
+    )
+
+    await state.finish()  # Завершаем текущее состояние
+
+
+@dp.message_handler(content_types=types.ContentType.PHOTO, state=TourStates.waiting_for_photo)
+async def process_photo(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    field_name = user_data.get('field_name')
+    tour_id = user_data.get('tour_id')
+    # Получаем ID фотографии
+    file_id = message.photo[-1].file_id  # Получаем наилучшее качество фото
+
+    # Загружаем фотографию
+    photo = await bot.get_file(file_id)
+    photo_file = await bot.download_file(photo.file_path)
+
+    # Сохраняем фотографию в папку tour_photo
+    photo_path = os.path.join(PHOTO_DIR, f'tour_{tour_id}.jpg')  # Формируем имя файла
+    with open(photo_path, 'wb') as new_file:
+        new_file.write(photo_file.getvalue())
+
+    # Обновляем значение в БД
+    conn = sqlite3.connect('tour_bot.db')
+    cursor = conn.cursor()
+
+    cursor.execute("UPDATE Tours SET photo = ? WHERE id = ?", (photo_path, tour_id))
+    conn.commit()
+
+    # Получаем обновленную информацию о поездке
+    cursor.execute("SELECT * FROM Tours WHERE id = ?", (tour_id,))
+    tour_info = cursor.fetchone()
+    conn.close()
+
+    # Формируем новое caption
+    caption = create_caption(tour_info)
+
+    # Отправляем обновленное сообщение с фотографией
+    await bot.send_photo(
+        chat_id=message.from_user.id,
+        photo=open(photo_path, 'rb'),  # Открываем фото для отправки
+        caption=caption,
+        reply_markup=generate_inline_keyboard(tour_id)
+    )
+
+    await state.finish()  # Завершаем текущее состояние
+
+
+@dp.message_handler(state="*")
+async def handle_new_question(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+
+    print(user_data)
+
+    if "action" in user_data and user_data["action"] == "add":
+        question_text = message.text
+        await bot.send_message(message.from_user.id, "Введите ответ:")
+        await state.update_data({"question": question_text, "action": "add_answer"})
+    elif "action" in user_data and user_data["action"] == "add_answer":
+        answer_text = message.text
+        insert_question(user_data["question"], answer_text)
+        await bot.send_message(message.from_user.id, "Вопрос добавлен!")
+        await admin_faq_2(message)
+        await state.finish()  # Сброс состояния
+
+    elif "action" in user_data and user_data["action"] == "edit_question_text_":
+        question_id = user_data["question_id"]
+        new_question_text = message.text
+        update_question_in_db(question_id, new_question_text)  # Ваша функция обновления
+        await bot.send_message(message.from_user.id, "Вопрос обновлен!")
+
+        await admin_faq(message)  # Вернем к вопросам и ответам
+        await state.finish()
+
+    elif "action" in user_data and user_data["action"] == "edit_answer_text_":
+        question_id = user_data["question_id"]
+        new_answer_text = message.text
+        update_answer_in_db(question_id, new_answer_text)  # Ваша функция обновления
+        await bot.send_message(message.from_user.id, "Ответ обновлен!")
+
+        await admin_faq(message)  # Вернем к вопросам и ответам
+        await state.finish()
 
 
 if __name__ == '__main__':
