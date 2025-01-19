@@ -10,7 +10,7 @@ from aiogram.utils import executor
 from bd import insert_user, get_users, get_user_by_telegram_id, update_user, \
     insert_question, get_questions, delete_question_from_db, \
     update_question_in_db, update_answer_in_db, get_current_question, \
-    insert_message_id, get_all_message_ids, clear_bd_message  # Убедитесь, что эти функции корректны.
+    insert_message_id, get_all_message_ids, delete_message_id  # Убедитесь, что эти функции корректны.
 from states import Form, Questions, Tours, TourStates
 from aiogram_timepicker.panel import FullTimePicker, full_timep_callback, full_timep_default
 from aiogram_datepicker import Datepicker, DatepickerSettings
@@ -21,9 +21,13 @@ full_timep_default(
 )
 
 
-async def delete_all_message(chat_id):
-    for message in get_all_message_ids():
-        await bot.delete_message(chat_id, message)
+async def delete_all_message(chat_id, user_id):
+    for mes in get_all_message_ids(user_id):
+        await bot.delete_message(chat_id, mes)
+
+def clear_bd_message(user_id):
+    for mes in get_all_message_ids(user_id):
+        delete_message_id(mes)
 
 API_TOKEN = '7430055967:AAE_ptETbGQV1CT2RoeqTTFDV1N6flWzquY'
 
@@ -63,6 +67,8 @@ async def start_command(message: types.Message, state: FSMContext):
 
 
 async def show_user_profile(message: types.Message, edit_mode=False, telegram_id=None):
+    await delete_all_message(message.chat.id, message.from_user.id)
+    clear_bd_message(message.from_user.id)
     user_info = get_user_by_telegram_id(telegram_id)
     # Формируем текст для подписей
     profile_text = (
@@ -145,6 +151,8 @@ async def check_admin_id_callback_query(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "back_to_profile")
 async def back_to_profile(callback_query: types.CallbackQuery):
+    await delete_all_message(callback_query.message.chat.id, callback_query.from_user.id)
+    clear_bd_message(callback_query.from_user.id)
     await bot.answer_callback_query(callback_query.id)
     user_id = callback_query.from_user.id
     await callback_query.message.delete()
@@ -197,13 +205,14 @@ async def process_my_trips(callback_query: types.CallbackQuery):
                 f"📝 Описание: {description if description else 'Не заполнено'}\n\n"
             )
 
-            await bot.send_photo(
+            mes = await bot.send_photo(
                 chat_id=callback_query.from_user.id,
                 photo=open(photo,
                            'rb') if photo else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
                 caption=caption,
                 reply_markup=keyboard
             )
+            insert_message_id(mes.message_id, callback_query.from_user.id)
         # После всех поездок отправляем сообщение с кнопкой "Назад"
         back_keyboard = types.InlineKeyboardMarkup()
         back_button = types.InlineKeyboardButton(text='🔙 Назад', callback_data='back_to_profile')
@@ -277,7 +286,7 @@ async def register_via_bot(callback_query: types.CallbackQuery):
 
         mes = await bot.send_message(callback_query.from_user.id, "У вас еще нет зарегистрированного номера телефона.\n" + "Пожалуйста, введите свой номер телефона:",
                                reply_markup=keyboard)
-        insert_message_id(mes.message_id)
+        insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.callback_query_handler(lambda c: c.data == 'enter_phone_number')
@@ -287,7 +296,7 @@ async def enter_phone_number(callback_query: types.CallbackQuery):
     # Запрашиваем номер телефона
     mes = await bot.send_message(callback_query.from_user.id,
                            "Пожалуйста, отправьте свой номер телефона в формате: +7XXXXXXXXXX")
-    insert_message_id(mes.message_id)
+    insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.message_handler(lambda message: message.text.startswith('+7') or message.text.startswith('8') and len(message.text) == 12)
@@ -305,12 +314,12 @@ async def save_phone_number(message: types.Message):
     mes = await bot.send_message(message.chat.id,
                            "Ваш номер телефона успешно записан. Теперь вы можете записаться на поездку через бота!")
     time.sleep(1)
-    insert_message_id(mes.message_id)
-    insert_message_id(message.message_id)
+    insert_message_id(mes.message_id, message.from_user.id)
+    insert_message_id(message.message_id, message.from_user.id)
 
-    for i in get_all_message_ids():
+    for i in get_all_message_ids(message.from_user.id):
         await bot.delete_message(message.chat.id, i)
-    clear_bd_message()
+    clear_bd_message(message)
 
 
 
@@ -322,13 +331,16 @@ async def edit_name(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     await Form.waiting_for_new_name.set()  # Устанавливаем новое состояние
     await callback_query.message.delete()
-    await callback_query.message.answer("Введите ваше новое имя:")
+    mes = await callback_query.message.answer("Введите ваше новое имя:")
+    insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.message_handler(state=Form.waiting_for_new_name)
 async def process_new_name(message: types.Message, state: FSMContext):
     new_name = message.text
     user_id = message.from_user.id
+
+    insert_message_id(message.message_id, message.from_user.id)
 
     # Сохраним новое имя в БД
     update_user(user_id, name=new_name)
@@ -418,7 +430,8 @@ async def process_admin(callback_query: types.CallbackQuery):
         admin_markup.add(types.InlineKeyboardButton("✈️ Поездки", callback_data="admin_trips"))
         admin_markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_profile"))
 
-        await bot.send_message(callback_query.from_user.id, "Добро пожаловать в админку! Выберите действие:", reply_markup=admin_markup)
+        mes = await bot.send_message(callback_query.from_user.id, "Добро пожаловать в админку! Выберите действие:", reply_markup=admin_markup)
+        insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 # ADMIN - ЛОГИКА ДОБАВЛЕНИЯ ВОПРОСЫ-ОТВЕТЫ
@@ -446,7 +459,7 @@ async def admin_faq_2(callback_query_or_message):
     faq_markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin"))
 
     mes = await bot.send_message(user_id, "Вопросы и ответы:", reply_markup=faq_markup)
-    insert_message_id(mes.message_id)
+    insert_message_id(mes.message_id, callback_query_or_message.from_user.id)
 
 
 @dp.callback_query_handler(lambda c: c.data == "admin_faq")
@@ -473,24 +486,32 @@ async def admin_faq(callback_query_or_message):
     faq_markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_admin"))
 
     mes = await bot.send_message(user_id, "Вопросы и ответы:", reply_markup=faq_markup)
-    insert_message_id(mes.message_id)
+    insert_message_id(mes.message_id, callback_query_or_message.from_user.id)
 
 
 @dp.callback_query_handler(lambda c: c.data == "back_to_admin", state="*")
 async def back_to_admin(callback_query: types.CallbackQuery, state: FSMContext):
-    await delete_all_message(callback_query.message.chat.id)
-    clear_bd_message()
+    print("Кнопка назад")
+
     await state.finish()
+    await delete_all_message(callback_query.message.chat.id, callback_query.from_user.id)
+    clear_bd_message(callback_query.from_user.id)
+
     await bot.answer_callback_query(callback_query.id)
     # Здесь вы можете вернуть пользователя в основное админ меню
+
+
+
     await process_admin(callback_query)
+
+
 
 
 @dp.callback_query_handler(lambda c: c.data == "add_question")
 async def add_question(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     mes = await bot.send_message(callback_query.from_user.id, "Введите вопрос:")
-    insert_message_id(mes.message_id)
+    insert_message_id(mes.message_id, callback_query.from_user.id)
     await dp.current_state(user=callback_query.from_user.id).set_data({"action": "add"})
 
 
@@ -517,9 +538,11 @@ async def edit_question(callback_query: types.CallbackQuery):
         )
         edit_markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_questions"))  # Кнопка назад
 
-        await bot.send_message(callback_query.from_user.id, "Что редактируем? 😊", reply_markup=edit_markup)
+        mes = await bot.send_message(callback_query.from_user.id, "Что редактируем? 😊", reply_markup=edit_markup)
+        insert_message_id(mes.message_id, callback_query.from_user.id)
     else:
-        await bot.send_message(callback_query.from_user.id, "Вопрос не найден.")
+        mes = await bot.send_message(callback_query.from_user.id, "Вопрос не найден.")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("edit_question_text_"))
@@ -531,7 +554,8 @@ async def edit_question_text(callback_query: types.CallbackQuery):
 
     if question:
         current_question = question[0]
-        await bot.send_message(callback_query.from_user.id, f"Введите новый текст для вопроса:\n{current_question}")
+        mes = await bot.send_message(callback_query.from_user.id, f"Введите новый текст для вопроса:\n{current_question}")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         await dp.current_state(user=callback_query.from_user.id).set_data(
             {"action": "edit_question_text_", "question_id": question_id})
         print("Состояние установлено на Questions.question")  # Отладка
@@ -552,7 +576,8 @@ async def edit_answersss_text(callback_query: types.CallbackQuery):
 
     if record:
         current_answer = record[0]
-        await bot.send_message(callback_query.from_user.id, f"Введите новый текст для ответа:\n{current_answer}")
+        mes = await bot.send_message(callback_query.from_user.id, f"Введите новый текст для ответа:\n{current_answer}")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         await dp.current_state(user=callback_query.from_user.id).set_data(
             {"action": "edit_answer_text_", "question_id": question_id})
     else:
@@ -562,14 +587,16 @@ async def edit_answersss_text(callback_query: types.CallbackQuery):
 # Обработчик для кнопки "Назад"
 @dp.callback_query_handler(lambda c: c.data == "back_to_questions")
 async def back_to_questions(callback_query: types.CallbackQuery):
+    await delete_all_message(callback_query.message.chat.id, callback_query.from_user.id)
+    clear_bd_message(callback_query.from_user.id)
     await admin_faq(callback_query)  # Предполагаем, что admin_faq — это функция, которая показывает все вопросы
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("delete_question_"))
 async def delete_question(callback_query: types.CallbackQuery):
-    insert_message_id(callback_query.message.message_id)
-    await delete_all_message(callback_query.message.chat.id)
-    clear_bd_message()
+    insert_message_id(callback_query.message.message_id, callback_query.from_user.id)
+    await delete_all_message(callback_query.message.chat.id, callback_query.from_user.id)
+    clear_bd_message(callback_query.from_user.id)
     question_id = int(callback_query.data.split("_")[-1])
     delete_question_from_db(question_id)
     await admin_faq_2(callback_query)
@@ -614,7 +641,7 @@ async def view_tours(callback_query: types.CallbackQuery):
                 caption=caption,
                 reply_markup=keyboard  # Добавляем инлайн-кнопки
             )
-            insert_message_id(mes.message_id)
+            insert_message_id(mes.message_id, callback_query.from_user.id)
 
     else:
         await bot.send_message(callback_query.from_user.id, "Нет доступных поездок.")
@@ -626,13 +653,14 @@ async def view_tours(callback_query: types.CallbackQuery):
         types.InlineKeyboardButton("➕ Добавить поездку", callback_data="add_tour")
     )
 
-    await bot.send_message(callback_query.from_user.id, "Выберите действие:", reply_markup=markup)
+    mes = await bot.send_message(callback_query.from_user.id, "Выберите действие:", reply_markup=markup)
+    insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith('edit_tour_'))
 async def edit_tour(callback_query: types.CallbackQuery):
-    await delete_all_message(callback_query.message.chat.id)
-    clear_bd_message()
+    await delete_all_message(callback_query.message.chat.id, callback_query.message)
+    clear_bd_message(callback_query.from_user.id)
     tour_id = callback_query.data.split('_')[-1]  # Получаем tour_id
 
     conn = sqlite3.connect('tour_bot.db')
@@ -658,7 +686,7 @@ async def edit_tour(callback_query: types.CallbackQuery):
         reply_markup=generate_inline_keyboard(tour_id)
     )
 
-    insert_message_id(mes.message_id)
+    insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith('delete_tour_'))
@@ -682,6 +710,8 @@ async def delete_tour(callback_query: types.CallbackQuery):
 # Ваш обработчик для нажатия кнопки "Добавить поездку"
 @dp.callback_query_handler(lambda c: c.data == "add_tour")
 async def add_tour(callback_query: types.CallbackQuery):
+    await delete_all_message(callback_query.message.chat.id, callback_query.from_user.id)
+    clear_bd_message(callback_query.from_user.id)
     conn = sqlite3.connect('tour_bot.db')
     cursor = conn.cursor()
 
@@ -699,12 +729,14 @@ async def add_tour(callback_query: types.CallbackQuery):
 
     caption = create_caption(tour_info)
 
-    await bot.send_photo(
+    mes = await bot.send_photo(
         chat_id=callback_query.from_user.id,
         photo="https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
         caption=caption,
         reply_markup=generate_inline_keyboard(new_tour_id)
     )
+
+    insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 def create_caption(tour_info):
@@ -1078,17 +1110,17 @@ async def handle_new_question(message: types.Message, state: FSMContext):
     if "action" in user_data and user_data["action"] == "add":
         question_text = message.text
         mes = await bot.send_message(message.from_user.id, "Введите ответ:")
-        insert_message_id(mes.message_id)
-        insert_message_id(message.message_id)
+        insert_message_id(mes.message_id, message.from_user.id)
+        insert_message_id(message.message_id, message.from_user.id)
         await state.update_data({"question": question_text, "action": "add_answer"})
     elif "action" in user_data and user_data["action"] == "add_answer":
         answer_text = message.text
         insert_question(user_data["question"], answer_text)
         mes = await bot.send_message(message.from_user.id, "Вопрос добавлен!")
-        insert_message_id(mes.message_id)
-        insert_message_id(message.message_id)
-        await delete_all_message(message.chat.id)
-        clear_bd_message()
+        insert_message_id(mes.message_id, message.from_user.id)
+        insert_message_id(message.message_id, message.from_user.id)
+        await delete_all_message(message.chat.id, message.from_user.id)
+        clear_bd_message(message.from_user.id)
         await admin_faq_2(message)
         await state.finish()  # Сброс состояния
 
@@ -1096,7 +1128,11 @@ async def handle_new_question(message: types.Message, state: FSMContext):
         question_id = user_data["question_id"]
         new_question_text = message.text
         update_question_in_db(question_id, new_question_text)  # Ваша функция обновления
-        await bot.send_message(message.from_user.id, "Вопрос обновлен!")
+        mes = await bot.send_message(message.from_user.id, "Вопрос обновлен!")
+        insert_message_id(mes.message_id, message.from_user.id)
+        insert_message_id(message.message_id, message.from_user.id)
+        await delete_all_message(message.chat.id, message.from_user.id)
+        clear_bd_message(message.from_user.id)
 
         await admin_faq(message)  # Вернем к вопросам и ответам
         await state.finish()
@@ -1105,7 +1141,11 @@ async def handle_new_question(message: types.Message, state: FSMContext):
         question_id = user_data["question_id"]
         new_answer_text = message.text
         update_answer_in_db(question_id, new_answer_text)  # Ваша функция обновления
-        await bot.send_message(message.from_user.id, "Ответ обновлен!")
+        mes = await bot.send_message(message.from_user.id, "Ответ обновлен!")
+        insert_message_id(mes.message_id, message.from_user.id)
+        insert_message_id(message.message_id, message.from_user.id)
+        await delete_all_message(message.chat.id, message.from_user.id)
+        clear_bd_message(message.from_user.id)
 
         await admin_faq(message)  # Вернем к вопросам и ответам
         await state.finish()

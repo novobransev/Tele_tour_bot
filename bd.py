@@ -74,11 +74,13 @@ def create_tables():
     )
     ''')
 
-    # Создаем таблицу Messages для хранения ID сообщений Telegram
+    # Создает таблицу Messages, если она не существует,
+    # добавляем поле telegram_id для учета идентификатора пользователя
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS Messages (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        telegram_message_id INTEGER NOT NULL UNIQUE
+        telegram_message_id INTEGER NOT NULL UNIQUE,
+        telegram_id INTEGER NOT NULL  -- поле для хранения идентификатора пользователя
     )
     ''')
 
@@ -206,19 +208,24 @@ def get_current_question(question_id):
     return record
 
 
-def insert_message_id(message_id):
-    """Вставляет идентификатор сообщения в таблицу Messages."""
+def insert_message_id(message_id, user_id):
+    """Вставляет идентификатор сообщения и идентификатор пользователя в таблицу Messages.
+
+    Args:
+        message_id (int): Уникальный идентификатор сообщения.
+        user_id (int): Уникальный идентификатор пользователя Telegram.
+    """
     conn = create_connection()
     cursor = conn.cursor()
 
     try:
-        cursor.execute('INSERT INTO Messages (telegram_message_id) VALUES (?)', (message_id,))
+        # Вставка идентификатора сообщения и идентификатора пользователя
+        cursor.execute('INSERT INTO Messages (telegram_message_id, telegram_id) VALUES (?, ?)', (message_id, user_id))
         conn.commit()
     except sqlite3.IntegrityError:
-        print(f"Сообщение с ID {message_id} уже существует.")
+        print(f"Сообщение с ID {message_id} уже существует для пользователя {user_id}.")
     finally:
         conn.close()
-
 
 def delete_message_id(message_id):
     """Удаляет идентификатор сообщения из таблицы Messages по его ID."""
@@ -240,28 +247,26 @@ def clear_messages_table():
     conn.close()
 
 
-def get_all_message_ids():
-    """Получает все идентификаторы сообщений из таблицы Messages.
+def get_all_message_ids(user_id):
+    """Получает все идентификаторы сообщений для заданного telegram_id из таблицы Messages.
+
+    Args:
+        user_id (int): Уникальный идентификатор пользователя Telegram.
 
     Returns:
-        list: Список идентификаторов сообщений.
+        list: Список идентификаторов сообщений, связанных с указанным пользователем.
     """
     conn = create_connection()
     cursor = conn.cursor()
 
-    # Выполняем SQL-запрос для выборки всех идентификаторов сообщений
-    cursor.execute('SELECT telegram_message_id FROM Messages')
+    # Выполняем SQL-запрос для выборки всех идентификаторов сообщений, относящихся к данному telegram_id
+    cursor.execute('SELECT telegram_message_id FROM Messages WHERE telegram_id = ?', (user_id,))
 
     # Извлекаем все идентификаторы сообщений в виде списка
     message_ids = [row[0] for row in cursor.fetchall()]
 
     conn.close()
     return message_ids
-
-
-def clear_bd_message():
-    for message in get_all_message_ids():
-        delete_message_id(message)
 
 
 if __name__ == '__main__':
