@@ -10,28 +10,32 @@ def create_tables():
     """Создает таблицы Questions, Tours и Users.
 
         1. Таблица Questions:
-           - id: INTEGER, PRIMARY KEY, AUTO INCREMENT
-           - question: TEXT - текст вопроса
-           - answer: TEXT - текст ответа
+            - id: INTEGER, PRIMARY KEY, AUTO INCREMENT
+            - question: TEXT - текст вопроса
+            - answer: TEXT - текст ответа
 
         2. Таблица Tours:
-           - id: INTEGER, PRIMARY KEY, AUTO INCREMENT
-           - departure_city: TEXT - город отправления
-           - arrival_city: TEXT - город назначения
-           - price: REAL - цена поездки
-           - departure_time: TEXT - время отправления
-           - trip_date: TEXT - дата поездки
-           - description: TEXT - описание поездки (дополнительная информация)
-           - photo: TEXT - ссылка на фотографию
-           - status: TEXT - состояние поездки (текущее, будущее, прошлое)
+            - id: INTEGER, PRIMARY KEY, AUTO INCREMENT
+            - departure_city: TEXT - город отправления
+            - arrival_city: TEXT - город назначения
+            - price: REAL - цена поездки
+            - departure_time: TEXT - время отправления
+            - trip_date: TEXT - дата поездки
+            - description: TEXT - описание поездки (дополнительная информация)
+            - photo: TEXT - ссылка на фотографию
+            - status: TEXT - состояние поездки (текущее, будущее, прошлое)
 
         3. Таблица Users:
-           - id: INTEGER, PRIMARY KEY, AUTO INCREMENT
-           - telegram_id: INTEGER - id  телеграмма
-           - name: TEXT - имя пользователя
-           - phone_number: TEXT - номер телефона
-           - trips: TEXT - список поездок (можно использовать JSON или просто перечисление ID поездок)
-           - photo: TEXT - ссылка на фотографию пользователя"""
+            - id: INTEGER, PRIMARY KEY, AUTO INCREMENT
+            - telegram_id: INTEGER - id  телеграмма
+            - name: TEXT - имя пользователя
+            - phone_number: TEXT - номер телефона
+            - trips: TEXT - список поездок (можно использовать JSON или просто перечисление ID поездок)
+            - photo: TEXT - ссылка на фотографию пользователя
+
+        4. Messages:
+            - id: INTEGER, PRIMARY KEY, AUTO INCREMENT
+            - telegram_message_id: INTEGER - уникальный идентификатор сообщения в Telegram"""
 
     conn = create_connection()
     cursor = conn.cursor()
@@ -67,6 +71,14 @@ def create_tables():
         phone_number TEXT NOT NULL,
         trips TEXT,  -- можно использовать JSON или перечисление ID поездок
         photo TEXT  -- ссылка на фотографию пользователя
+    )
+    ''')
+
+    # Создаем таблицу Messages для хранения ID сообщений Telegram
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS Messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        telegram_message_id INTEGER NOT NULL UNIQUE
     )
     ''')
 
@@ -192,6 +204,64 @@ def get_current_question(question_id):
     record = cursor.fetchone()
     connection.close()
     return record
+
+
+def insert_message_id(message_id):
+    """Вставляет идентификатор сообщения в таблицу Messages."""
+    conn = create_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute('INSERT INTO Messages (telegram_message_id) VALUES (?)', (message_id,))
+        conn.commit()
+    except sqlite3.IntegrityError:
+        print(f"Сообщение с ID {message_id} уже существует.")
+    finally:
+        conn.close()
+
+
+def delete_message_id(message_id):
+    """Удаляет идентификатор сообщения из таблицы Messages по его ID."""
+    conn = create_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('DELETE FROM Messages WHERE telegram_message_id = ?', (message_id,))
+    conn.commit()
+    conn.close()
+
+
+def clear_messages_table():
+    """Очищает таблицу Messages от всех данных."""
+    conn = create_connection()
+    cursor = conn.cursor()
+
+    cursor.execute('DELETE FROM Messages')
+    conn.commit()
+    conn.close()
+
+
+def get_all_message_ids():
+    """Получает все идентификаторы сообщений из таблицы Messages.
+
+    Returns:
+        list: Список идентификаторов сообщений.
+    """
+    conn = create_connection()
+    cursor = conn.cursor()
+
+    # Выполняем SQL-запрос для выборки всех идентификаторов сообщений
+    cursor.execute('SELECT telegram_message_id FROM Messages')
+
+    # Извлекаем все идентификаторы сообщений в виде списка
+    message_ids = [row[0] for row in cursor.fetchall()]
+
+    conn.close()
+    return message_ids
+
+
+def clear_bd_message():
+    for message in get_all_message_ids():
+        delete_message_id(message)
 
 
 if __name__ == '__main__':
