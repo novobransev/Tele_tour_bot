@@ -25,6 +25,7 @@ async def delete_all_message(chat_id, user_id):
     for mes in get_all_message_ids(user_id):
         await bot.delete_message(chat_id, mes)
 
+
 def clear_bd_message(user_id):
     for mes in get_all_message_ids(user_id):
         delete_message_id(mes)
@@ -38,7 +39,7 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 
 DEFAULT_PHOTO = 'https://cs1e5a.4pda.ws/15550621.png'  # URL фото по умолчанию
 PHOTO_STORAGE_DIR = 'photos'  # Директория для хранения изображений
-ADMIN_ID = 868918195
+ADMIN_ID = 305636069
 PHOTO_DIR = 'tour_photo'
 
 # Проверяем, существует ли директория для хранения фотографий, если нет - создаем
@@ -173,12 +174,13 @@ async def process_edit_profile(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "my_trips")
 async def process_my_trips(callback_query: types.CallbackQuery):
+    print("Выполняю")
     await bot.answer_callback_query(callback_query.id)
     # Получаем данные о поездках из базы данных
     connection = sqlite3.connect('tour_bot.db')
     cursor = connection.cursor()
     cursor.execute(
-        "SELECT id, departure_city, arrival_city, price, departure_time, trip_date, description, photo, published FROM Tours")
+        "SELECT id, departure_city, arrival_city, price, departure_time, trip_date, description, photo, published FROM Tours WHERE published = 1")
     records = cursor.fetchall()
     connection.close()
 
@@ -187,7 +189,7 @@ async def process_my_trips(callback_query: types.CallbackQuery):
             tour_id, departure_city, arrival_city, price, departure_time, trip_date, description, photo, published = record
 
             # Создаем инлайн-кнопку "Записаться"
-            register_button = types.InlineKeyboardButton(text='📝 Записаться', callback_data=f'register_for_trip_{tour_id}_{departure_city}_{arrival_city}')
+            register_button = types.InlineKeyboardButton(text='📝 Записаться', callback_data=f'register_for_trip_{tour_id}')
 
             # Создаем клавиатуру с кнопками
             keyboard = types.InlineKeyboardMarkup()
@@ -220,13 +222,15 @@ async def process_my_trips(callback_query: types.CallbackQuery):
 
 
 
-        await bot.send_message(
+        mes = await bot.send_message(
             chat_id=callback_query.from_user.id,
             text="Это все поездки.",
             reply_markup=back_keyboard  # Добавляем инлайн-кнопку "Назад"
         )
+        insert_message_id(mes.message_id, callback_query.from_user.id)
     else:
-        await bot.send_message(callback_query.from_user.id, "Нет доступных поездок.")
+        mes = await bot.send_message(callback_query.from_user.id, "Нет доступных поездок.")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.callback_query_handler(lambda c: c.data.startswith("register_for_trip_"))
@@ -234,9 +238,25 @@ async def register_for_trip(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
 
     # Здесь можно получить id тура из callback_data
-    tour_id = callback_query.data.split('_')[-3]  # Извлекаем tour_id
-    departure_city = callback_query.data.split('_')[-2]
-    arrival_city = callback_query.data.split('_')[-1]
+    tour_id = callback_query.data.split('_')[-1]  # Извлекаем tour_id
+
+    # Подключаемся к базе данных
+    conn = sqlite3.connect('tour_bot.db')
+    cursor = conn.cursor()
+
+    # Запрос для извлечения departure_city и arrival_city
+    cursor.execute('''
+        SELECT departure_city, arrival_city FROM Tours WHERE id = ?;
+    ''', (tour_id,))
+
+    # Извлекаем результаты
+    result = cursor.fetchone()
+
+    departure_city = result[0]  # Город отправления
+    arrival_city = result[1]  # Город назначения
+
+    print(departure_city, arrival_city)
+    conn.close()
 
     # Отправляем сообщение с информацией о записи
     message = (
@@ -277,6 +297,7 @@ async def register_via_bot(callback_query: types.CallbackQuery):
         phone_number = result[0]
         await bot.send_message(callback_query.from_user.id,
                                f"Вы записаны на поездку. Ваш номер: {phone_number}. Мы свяжемся с вами для подтверждения!")
+        await bot.send_message(ADMIN_ID, f"К вам Записался человек его номер телефона {phone_number}")
     else:
         # Если номер телефона не зарегистрирован
         # Предлагаем ввести номер телефона
@@ -317,9 +338,8 @@ async def save_phone_number(message: types.Message):
     insert_message_id(mes.message_id, message.from_user.id)
     insert_message_id(message.message_id, message.from_user.id)
 
-    for i in get_all_message_ids(message.from_user.id):
-        await bot.delete_message(message.chat.id, i)
-    clear_bd_message(message)
+    await delete_all_message(message.chat.id, message.from_user.id)
+    clear_bd_message(message.from_user.id)
 
 
 
@@ -354,7 +374,8 @@ async def edit_phone(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     await Form.waiting_for_new_phone.set()  # Устанавливаем новое состояние
     await callback_query.message.delete()
-    await callback_query.message.answer("Введите новый номер телефона:")
+    mes = await callback_query.message.answer("Введите новый номер телефона:")
+    insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.message_handler(state=Form.waiting_for_new_phone)
@@ -374,7 +395,8 @@ async def edit_photo(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
     await Form.waiting_for_new_photo.set()  # Устанавливаем новое состояние
     await callback_query.message.delete()
-    await callback_query.message.answer("Отправьте новое фото:")
+    mes = await callback_query.message.answer("Отправьте новое фото:")
+    insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 @dp.message_handler(state=Form.waiting_for_new_photo, content_types=types.ContentTypes.PHOTO)
@@ -430,8 +452,7 @@ async def process_admin(callback_query: types.CallbackQuery):
         admin_markup.add(types.InlineKeyboardButton("✈️ Поездки", callback_data="admin_trips"))
         admin_markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_profile"))
 
-        mes = await bot.send_message(callback_query.from_user.id, "Добро пожаловать в админку! Выберите действие:", reply_markup=admin_markup)
-        insert_message_id(mes.message_id, callback_query.from_user.id)
+        await bot.send_message(callback_query.from_user.id, "Добро пожаловать в админку! Выберите действие:", reply_markup=admin_markup)
 
 
 # ADMIN - ЛОГИКА ДОБАВЛЕНИЯ ВОПРОСЫ-ОТВЕТЫ
@@ -659,7 +680,7 @@ async def view_tours(callback_query: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data.startswith('edit_tour_'))
 async def edit_tour(callback_query: types.CallbackQuery):
-    await delete_all_message(callback_query.message.chat.id, callback_query.message)
+    await delete_all_message(callback_query.message.chat.id, callback_query.from_user.id)
     clear_bd_message(callback_query.from_user.id)
     tour_id = callback_query.data.split('_')[-1]  # Получаем tour_id
 
@@ -850,41 +871,49 @@ async def edit_field(callback_query: types.CallbackQuery, state: FSMContext):   
     await state.update_data(tour_id=tour_id)
 
     if field == 'departure-city':
-        await callback_query.message.answer("Введите город отправления:")
+        mes = await callback_query.message.answer("Введите город отправления:")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         await TourStates.waiting_for_field_value.set()
         await state.update_data(field_name='departure_city')
 
     elif field == 'arrival-city':
-        await callback_query.message.answer("Введите город назначения:")
+        mes = await callback_query.message.answer("Введите город назначения:")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         await TourStates.waiting_for_field_value.set()
         await state.update_data(field_name='arrival_city')
 
     elif field == 'price':
-        await callback_query.message.answer("Введите цену:")
+        mes = await callback_query.message.answer("Введите цену:")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         await TourStates.waiting_for_field_value.set()
         await state.update_data(field_name='price')
 
     elif field == 'departure-time':
-        await callback_query.message.answer(
+        mes = await callback_query.message.answer(
             "Выберите время начала поездки: ",
             reply_markup=await FullTimePicker().start_picker()
         )
+        insert_message_id(mes.message_id, callback_query.from_user.id)
 
     elif field == 'trip-date':
-        await callback_query.message.answer("Введите дату поездки:")
+        mes = await callback_query.message.answer("Введите дату поездки:")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         datepicker = Datepicker(_get_datepicker_settings())
 
         markup = datepicker.start_calendar()
-        await callback_query.message.answer('Select a date: ', reply_markup=markup)
+        mes = await callback_query.message.answer('Select a date: ', reply_markup=markup)
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         await state.update_data(field_name='trip_date')
 
     elif field == 'description':
-        await callback_query.message.answer("Введите описание:")
+        mes = await callback_query.message.answer("Введите описание:")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         await TourStates.waiting_for_field_value.set()
         await state.update_data(field_name='description')
 
     elif field == 'photo':
-        await callback_query.message.answer("Введите ссылку на фото:")
+        mes = await callback_query.message.answer("Введите ссылку на фото:")
+        insert_message_id(mes.message_id, callback_query.from_user.id)
         await TourStates.waiting_for_photo.set()
         await state.update_data(field_name='photo')
 
@@ -917,12 +946,13 @@ async def edit_field(callback_query: types.CallbackQuery, state: FSMContext):   
         caption = create_caption(tour_info)
 
         # Отправляем обновленное сообщение с фотографией
-        await bot.send_photo(
+        mes = await bot.send_photo(
             chat_id=callback_query.from_user.id,
             photo=open(photo_path, 'rb') if photo_path else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
             caption=caption,
             reply_markup=generate_inline_keyboard(tour_id)
         )
+        insert_message_id(mes.message_id, callback_query.from_user.id)
 
 
 DatepickerSettings(
@@ -1002,12 +1032,13 @@ async def _process_datepicker(callback_query: types.CallbackQuery, callback_data
         caption = create_caption(tour_info)
 
         # Отправляем обновленное сообщение с фотографией
-        await bot.send_photo(
+        mes = await bot.send_photo(
             chat_id=callback_query.from_user.id,
             photo=open(photo_path, 'rb') if photo_path else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
             caption=caption,
             reply_markup=generate_inline_keyboard(tour_id)
         )
+        insert_message_id(mes.message_id, callback_query.from_user.id)
 
         await state.finish()  # Завершаем текущее состояние
 
@@ -1016,6 +1047,9 @@ async def _process_datepicker(callback_query: types.CallbackQuery, callback_data
 
 @dp.message_handler(state=TourStates.waiting_for_field_value)
 async def process_field_value(message: types.Message, state: FSMContext):
+    insert_message_id(message.message_id, message.from_user.id)
+    await delete_all_message(message.chat.id, message.from_user.id)
+    clear_bd_message(message.from_user.id)
     user_data = await state.get_data()
     field_name = user_data.get('field_name')
     tour_id = user_data.get('tour_id')
@@ -1048,12 +1082,13 @@ async def process_field_value(message: types.Message, state: FSMContext):
         photo_path = False
 
     # Отправляем обновленное сообщение с фотографией
-    await bot.send_photo(
+    mes = await bot.send_photo(
         chat_id=message.from_user.id,
         photo=open(photo_path, 'rb') if photo_path else "https://steamuserimages-a.akamaihd.net/ugc/950726000575702194/E9862E658BDABDC2B3AD40338ADB7DA100C56004/?imw=512&imh=320&ima=fit&impolicy=Letterbox&imcolor=%23000000&letterbox=true",
         caption=caption,
         reply_markup=generate_inline_keyboard(tour_id)
     )
+    insert_message_id(mes.message_id, message.from_user.id)
 
     await state.finish()  # Завершаем текущее состояние
 
@@ -1091,12 +1126,13 @@ async def process_photo(message: types.Message, state: FSMContext):
     caption = create_caption(tour_info)
 
     # Отправляем обновленное сообщение с фотографией
-    await bot.send_photo(
+    mes = await bot.send_photo(
         chat_id=message.from_user.id,
         photo=open(photo_path, 'rb'),  # Открываем фото для отправки
         caption=caption,
         reply_markup=generate_inline_keyboard(tour_id)
     )
+    insert_message_id(mes.message_id, message.from_user.id)
 
     await state.finish()  # Завершаем текущее состояние
 
