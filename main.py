@@ -14,10 +14,13 @@ from bd import insert_user, get_users, get_user_by_telegram_id, update_user, \
 from states import Form, Questions, Tours, TourStates
 from aiogram_timepicker.panel import FullTimePicker, full_timep_callback, full_timep_default
 from aiogram_datepicker import Datepicker, DatepickerSettings
+from dotenv import load_dotenv
+load_dotenv()
 full_timep_default(
     # default labels
     label_up='⇪', label_down='⇓',
-    hour_format='{0:02}h', minute_format='{0:02}m', second_format='{0:02}s'
+    hour_format='{0:02} час.', minute_format='{0:02} мин.', second_format='{0:02} сек.',
+    label_select="Выбрать", label_cancel="Отменить"
 )
 
 
@@ -30,7 +33,8 @@ def clear_bd_message(user_id):
     for mes in get_all_message_ids(user_id):
         delete_message_id(mes)
 
-API_TOKEN = '7430055967:AAE_ptETbGQV1CT2RoeqTTFDV1N6flWzquY'
+API_TOKEN = os.getenv('API_TOKEN')
+GROUP_ID = os.getenv('GROUP_ID')
 
 logging.basicConfig(level=logging.INFO)
 
@@ -39,7 +43,7 @@ dp = Dispatcher(bot, storage=MemoryStorage())
 
 DEFAULT_PHOTO = 'https://cs1e5a.4pda.ws/15550621.png'  # URL фото по умолчанию
 PHOTO_STORAGE_DIR = 'photos'  # Директория для хранения изображений
-ADMIN_ID = 305636069
+ADMIN_ID = int(os.getenv('ADMIN_ID'))
 PHOTO_DIR = 'tour_photo'
 
 # Проверяем, существует ли директория для хранения фотографий, если нет - создаем
@@ -140,14 +144,6 @@ async def faq_questions(callback_query: types.CallbackQuery):
 
     # Закрываем соединение с базой данных
     connection.close()
-
-
-async def check_admin_id_message(message: types.Message):
-    return message.from_user.id == ADMIN_ID
-
-
-async def check_admin_id_callback_query(callback_query: types.CallbackQuery):
-    return callback_query.from_user.id == ADMIN_ID
 
 
 @dp.callback_query_handler(lambda c: c.data == "back_to_profile")
@@ -282,22 +278,62 @@ async def register_for_trip(callback_query: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("register_via_bot_"))
 async def register_via_bot(callback_query: types.CallbackQuery):
     await bot.answer_callback_query(callback_query.id)
+    trip_id = callback_query.data.split('_')[-1]  # Получаем ID поездки
+    user_id = callback_query.from_user.id  # Получаем ID пользователя Telegram
 
-    user_id = callback_query.from_user.id
-
-    # Проверяем, есть ли зарегистрированный номер телефона
+    # Проверяем, есть ли зарегистрированный номер телефона и поездки
     connection = sqlite3.connect('tour_bot.db')
     cursor = connection.cursor()
-    cursor.execute("SELECT phone_number FROM Users WHERE telegram_id = ?", (user_id,))
+    cursor.execute("SELECT phone_number, trips FROM Users WHERE telegram_id = ?", (user_id,))
     result = cursor.fetchone()
     connection.close()
+
     print(result)
     if result and result[0] and result[0] != 'не записан':
-        # Если номер телефона уже есть
         phone_number = result[0]
+        trips = result[1] if result[1] else ''  # Извлекаем текущий список поездок
+
+        # Проверяем, записан ли пользователь на эту поездку
+        trips_list = trips.split(',') if trips else []
+        if trip_id in trips_list:  # Если ID уже есть в списке
+            await bot.send_message(callback_query.from_user.id,
+                                   f"Вы уже записаны на поездку с ID {trip_id}.")
+            return  # Завершаем выполнение функции, если поездка уже была записана
+
+        # Добавляем новый ID поездки в список
+        trips_list.append(trip_id)
+        updated_trips = ','.join(trips_list)  # Объединяем обновлённый список в строку
+
+        # Обновляем записи пользователя в базе данных
+        connection = sqlite3.connect('tour_bot.db')
+        cursor = connection.cursor()
+        cursor.execute("UPDATE Users SET trips = ? WHERE telegram_id = ?", (updated_trips, user_id))
+        connection.commit()  # Сохраняем изменения
+        connection.close()
+
+        # Подготовка сообщения для подтверждения записи
         await bot.send_message(callback_query.from_user.id,
                                f"Вы записаны на поездку. Ваш номер: {phone_number}. Мы свяжемся с вами для подтверждения!")
-        await bot.send_message(ADMIN_ID, f"К вам Записался человек его номер телефона {phone_number}")
+
+        # Получаем информацию о поездке
+        connection = sqlite3.connect('tour_bot.db')
+        cursor = connection.cursor()
+        cursor.execute("SELECT departure_city, arrival_city FROM Tours WHERE id = ?", (trip_id,))
+        result = cursor.fetchone()  # Получаем одну запись
+        connection.close()
+        departure_city = result[0]
+        arrival_city = result[1]
+        message_text = (
+            f"📅 *Запись нового посетителя*  \n\n"
+            f"📞 *Номер телефона:* `{phone_number}`  \n\n"
+            f"🛂 *Номер поездки:* {trip_id}  \n\n"  # Номер поездки
+            f"✈️ *Город отправления:* {departure_city}  \n\n"  # Город отправления
+            f"🏖 *Город назначения:* {arrival_city}  \n\n"  # Город назначения
+            f"🎉 Спасибо, что выбрали нас!  \n\n"
+            f"📍 Ждем вас в нашем центре!  \n\n"
+            f"💼 Если у вас есть вопросы, не стесняйтесь обращаться!"
+        )
+        await bot.send_message(GROUP_ID, message_text, parse_mode='Markdown')
     else:
         # Если номер телефона не зарегистрирован
         # Предлагаем ввести номер телефона
@@ -308,6 +344,7 @@ async def register_via_bot(callback_query: types.CallbackQuery):
         mes = await bot.send_message(callback_query.from_user.id, "У вас еще нет зарегистрированного номера телефона.\n" + "Пожалуйста, введите свой номер телефона:",
                                reply_markup=keyboard)
         insert_message_id(mes.message_id, callback_query.from_user.id)
+
 
 
 @dp.callback_query_handler(lambda c: c.data == 'enter_phone_number')
@@ -442,14 +479,14 @@ async def delete_photo(callback_query: types.CallbackQuery):
 # ADMIN - ОБЩИЙ ИНТЕРФЕЙС
 @dp.callback_query_handler(lambda c: c.data == "admin")
 async def process_admin(callback_query: types.CallbackQuery):
-    if check_admin_id_callback_query(callback_query):
+    if callback_query.from_user.id == ADMIN_ID:
         await bot.answer_callback_query(callback_query.id)  # Уведомляем о нажатии кнопки
 
         # Создаем новое меню для администраторов
         admin_markup = types.InlineKeyboardMarkup()
         admin_markup.add(types.InlineKeyboardButton("📊 Статистика", callback_data="admin_statistics"))
         admin_markup.add(types.InlineKeyboardButton("❓ Вопросы-Ответы", callback_data="admin_faq"))
-        admin_markup.add(types.InlineKeyboardButton("✈️ Поездки", callback_data="admin_trips"))
+        admin_markup.add(types.InlineKeyboardButton("✈️ Просмотреть поездки", callback_data="admin_trips"))
         admin_markup.add(types.InlineKeyboardButton("🔙 Назад", callback_data="back_to_profile"))
 
         await bot.send_message(callback_query.from_user.id, "Добро пожаловать в админку! Выберите действие:", reply_markup=admin_markup)
@@ -719,13 +756,38 @@ async def delete_tour(callback_query: types.CallbackQuery):
     connection = sqlite3.connect('tour_bot.db')
     cursor = connection.cursor()
 
+    # Получаем имя файла фото из базы данных
+    cursor.execute("SELECT photo FROM Tours WHERE id = ?", (tour_id,))
+    result = cursor.fetchone()
+
+    if result:
+        photo_filename = result[0]
+        photo_path = os.path.join('', photo_filename)
+        # Удаляем файл фотографии, если он существует
+        if os.path.exists(photo_path):
+            os.remove(photo_path)
+
     # Удаляем запись о поездке по заданному tour_id
     cursor.execute("DELETE FROM Tours WHERE id = ?", (tour_id,))
-    connection.commit()
+
+    # Получаем ID всех пользователей с данным ID тура в списке поездок
+    cursor.execute("SELECT telegram_id, trips FROM Users WHERE trips LIKE ?", ('%' + tour_id + '%',))
+    users = cursor.fetchall()
+
+    for user in users:
+        user_id, trips = user
+        if trips:
+            trips_list = trips.split(',')  # Создаем список поездок
+            # Удаляем tour_id из списка поездок
+            updated_trips = [trip for trip in trips_list if trip != tour_id]
+            # Обновляем поле trips
+            cursor.execute("UPDATE Users SET trips = ? WHERE telegram_id = ?", (','.join(updated_trips), user_id))
+
+    connection.commit()  # Сохраняем изменения в базе данных
     connection.close()
 
     # Отправляем сообщение о том, что поездка была удалена
-    await view_tours(callback_query)
+    await view_tours(callback_query)  # Вызываем функцию просмотра поездок
 
 
 # Ваш обработчик для нажатия кнопки "Добавить поездку"
@@ -901,7 +963,7 @@ async def edit_field(callback_query: types.CallbackQuery, state: FSMContext):   
         datepicker = Datepicker(_get_datepicker_settings())
 
         markup = datepicker.start_calendar()
-        mes = await callback_query.message.answer('Select a date: ', reply_markup=markup)
+        mes = await callback_query.message.answer('Выберите дату поездки', reply_markup=markup)
         insert_message_id(mes.message_id, callback_query.from_user.id)
         await state.update_data(field_name='trip_date')
 
