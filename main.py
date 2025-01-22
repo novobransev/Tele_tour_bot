@@ -24,6 +24,11 @@ full_timep_default(
 )
 
 
+async def on_startup(dp):
+    # Установите webhook
+    await bot.set_webhook('https://tele-tour-bot-1.onrender.com/' + API_TOKEN)
+
+
 async def delete_all_message(chat_id, user_id):
     for mes in get_all_message_ids(user_id):
         await bot.delete_message(chat_id, mes)
@@ -1250,4 +1255,4 @@ async def handle_new_question(message: types.Message, state: FSMContext):
 
 
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    executor.start_webhook(dp, webhook_path='/' + API_TOKEN, on_startup=on_startup)
