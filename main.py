@@ -26,7 +26,7 @@ full_timep_default(
 
 async def on_startup(dp):
     # Установите webhook
-    await bot.set_webhook('https://tele-tour-bot-1.onrender.com' + API_TOKEN)
+    await bot.set_webhook('https://tele-tour-bot-1.onrender.com/' + API_TOKEN)
 
 
 async def delete_all_message(chat_id, user_id):
