@@ -40,6 +40,7 @@ def clear_bd_message(user_id):
 
 API_TOKEN = os.getenv('API_TOKEN')
 GROUP_ID = os.getenv('GROUP_ID')
+PHONE_NUMBER = os.getenv('PHONE_NUMBER')
 
 logging.basicConfig(level=logging.INFO)
 
@@ -264,7 +265,7 @@ async def register_for_trip(callback_query: types.CallbackQuery):
         f"Хотите записаться на тур №{tour_id}\n"
         f"{departure_city} - {arrival_city}?\n\n"
         "Вы можете записаться двумя способами:\n"
-        "1️⃣ Позвонить нашему менеджеру по номеру: <номер телефона>\n"
+        f"1️⃣ Позвонить нашему менеджеру по номеру: `{PHONE_NUMBER}`\n"
         "2️⃣ Записаться через бота, нажав кнопку ниже."
     )
 
@@ -276,7 +277,8 @@ async def register_for_trip(callback_query: types.CallbackQuery):
     await bot.send_message(
         chat_id=callback_query.from_user.id,
         text=message,
-        reply_markup=register_keyboard
+        reply_markup=register_keyboard,
+        parse_mode='Markdown'
     )
 
 
